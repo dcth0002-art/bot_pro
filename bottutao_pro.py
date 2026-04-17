@@ -22,7 +22,7 @@ def load_coin_list():
         return coins
     except FileNotFoundError:
         print("Không tìm thấy file coin_list.txt. Sử dụng danh sách mặc định.")
-        return ["BTC-USDT-SWAP", "ETH-USDT-SWAP", "SOL-USDT-SWAP"] # Danh sách dự phòng
+        return ["BTC-USDT-SWAP", "ETH-USDT-SWAP", "SOL-USDT-SWAP"]
 # --- KẾT THÚC HÀM TẢI DANH SÁCH COIN ---
 
 
@@ -45,45 +45,41 @@ RISK_CONFIG = {
 
 # --- CÁC HÀM TIỆN ÍCH ---
 def send_telegram_message(message):
-    """Gửi tin nhắn đến một chat cụ thể trên Telegram."""
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        print("Thiếu thông tin TELEGRAM_BOT_TOKEN hoặc TELEGRAM_CHAT_ID.")
-        return
-
+    """Gửi tin nhắn đến Telegram."""
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID: return
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {
-        'chat_id': TELEGRAM_CHAT_ID,
-        'text': message,
-        'parse_mode': 'Markdown'
-    }
+    payload = {'chat_id': TELEGRAM_CHAT_ID, 'text': message, 'parse_mode': 'Markdown'}
     try:
-        response = requests.post(url, json=payload)
-        if response.status_code != 200:
-            print(f"Lỗi khi gửi tin nhắn Telegram: {response.text}")
+        requests.post(url, json=payload, timeout=5)
+    except: pass
+
+def get_all_tickers():
+    """Lấy giá của TẤT CẢ các cặp SWAP trên OKX trong 1 lần gọi duy nhất."""
+    try:
+        url = "https://www.okx.com/api/v5/market/tickers?instType=SWAP"
+        response = requests.get(url, timeout=10)
+        data = response.json().get('data', [])
+        # Chuyển thành dict {instId: last_price}
+        return {item['instId']: float(item['last']) for item in data}
     except Exception as e:
-        print(f"Lỗi kết nối đến Telegram: {e}")
+        print(f"Lỗi khi lấy giá hàng loạt: {e}")
+        return {}
 
 def get_historical_data(instId, timeframe, limit=100):
     try:
         url = f"https://www.okx.com/api/v5/market/candles?instId={instId}&bar={timeframe}&limit={limit}"
-        response = requests.get(url)
-        response.raise_for_status()
+        response = requests.get(url, timeout=10)
         data = response.json().get('data', [])
-        if not data:
-            return None
+        if not data: return None
         df = pd.DataFrame(data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'volCcy', 'volCcyQuote', 'confirm'])
         df = df[['timestamp', 'open', 'high', 'low', 'close', 'volume']].astype(float)
         df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
         df = df.sort_values(by='timestamp', ascending=False).reset_index(drop=True)
         return df
-    except Exception as e:
-        print(f"Lỗi khi lấy dữ liệu lịch sử cho {instId}: {e}")
-        return None
+    except: return None
 # --- KẾT THÚC CÁC HÀM TIỆN ÍCH ---
 
-# --- LỚP QUẢN LÝ GIAO DỊCH ---
 class TradeManager:
-    # (Lớp này giữ nguyên)
     def __init__(self, initial_balance):
         self.balance = initial_balance
         self.open_positions = {}
@@ -114,58 +110,40 @@ class TradeManager:
             elif (pos['side'] == 'buy' and price >= pos['tp']) or (pos['side'] == 'sell' and price <= pos['tp']):
                 reason = "Take Profit"
             if reason:
-                pnl = self.close_position(coin, pos['sl'] if reason == "Stoploss" else pos['tp'])
+                pnl = self.close_position(coin, price) # Đóng bằng giá hiện tại
                 closed_trades.append({"coin": coin, "pnl": pnl, "reason": reason})
         return closed_trades
-# --- KẾT THÚC LỚP QUẢN LÝ ---
 
-# --- HÀM CHÍNH CỦA BOT ---
+# --- HÀM CHÍNH ---
 def run_bot():
     manager = TradeManager(DEMO_BALANCE_USD)
-    send_telegram_message(f"🚀 *Bot Giao Dịch PRO (v2.5) đã khởi động* 🚀\nVốn ban đầu: ${manager.balance:.2f}\nĐang theo dõi: {len(COIN_PAIRS_TO_TRADE)} cặp tiền.")
+    send_telegram_message(f"🚀 *Bot PRO v2.6 Tối ưu đã khởi động*\nQuét hàng loạt: {len(COIN_PAIRS_TO_TRADE)} cặp.")
 
     while True:
-        print(f"\n[{time.strftime('%H:%M:%S')}] Bắt đầu chu kỳ quét... Số dư: ${manager.balance:.2f}, Lệnh mở: {len(manager.open_positions)}")
+        start_time = time.time()
+        print(f"\n[{time.strftime('%H:%M:%S')}] Chu kỳ mới. Lệnh mở: {len(manager.open_positions)}")
         
-        current_prices = {}
-        for coin in COIN_PAIRS_TO_TRADE:
-            df_price = get_historical_data(coin, "1m", 2)
-            if df_price is not None:
-                current_prices[coin] = df_price['close'].iloc[0]
-
+        # 1. Lấy giá toàn sàn trong 1 lần gọi (Cực nhanh)
+        current_prices = get_all_tickers()
+        
+        # 2. Kiểm tra đóng lệnh
         closed_trades = manager.check_positions(current_prices)
-        
         for trade in closed_trades:
-            msg = (f"🔴 *LỆNH ĐÃ ĐÓNG ({trade['reason']})*\n\n"
-                   f"Cặp tiền: *{trade['coin']}*\n"
-                   f"Lời/Lỗ: *${trade['pnl']:.2f}*\n"
-                   f"Số dư mới: `${manager.balance:.2f}`")
+            msg = (f"🔴 *ĐÓNG LỆNH ({trade['reason']})*\nCặp: {trade['coin']}\nPNL: ${trade['pnl']:.2f}\nSố dư: ${manager.balance:.2f}")
             send_telegram_message(msg)
             print(msg)
 
-        if closed_trades:
-            print("Một hoặc nhiều lệnh đã đóng, gửi báo cáo tổng quan...")
-            pnl = manager.balance - DEMO_BALANCE_USD
-            pnl_percent = (pnl / DEMO_BALANCE_USD) * 100
-            pnl_sign = "+" if pnl >= 0 else ""
-            
-            report_message = (
-                f"📊 *BÁO CÁO TỔNG QUAN (Sau khi đóng lệnh)*\n\n"
-                f"‣ *Số dư hiện tại:* `${manager.balance:,.2f}`\n"
-                f"‣ *Lời/Lỗ (PNL):* `{pnl_sign}${pnl:,.2f}` (`{pnl_sign}{pnl_percent:.2f}%`)\n"
-                f"‣ *Số lệnh đang mở:* `{len(manager.open_positions)}`"
-            )
-            send_telegram_message(report_message)
-            print(report_message)
-
+        # 3. Quét tìm cơ hội mới
         for coin in COIN_PAIRS_TO_TRADE:
-            if coin in manager.open_positions:
-                continue
+            if coin in manager.open_positions: continue
+            
+            # Nghỉ ngắn để tránh bị OKX chặn IP khi quét 290 đồng
+            time.sleep(0.05) 
 
             df = get_historical_data(coin, TIMEFRAME)
-            if df is None or len(df) < 35:
-                continue
+            if df is None or len(df) < 35: continue
 
+            # Phân tích kỹ thuật
             df.ta.ema(length=10, append=True)
             df.ta.ema(length=30, append=True)
             df.ta.rsi(length=14, append=True)
@@ -176,60 +154,43 @@ def run_bot():
             latest = df.iloc[0]
             prev = df.iloc[1]
 
-            buy_conditions = [
+            buy_cond = [
                 latest['EMA_10'] > latest['EMA_30'],
                 latest['RSI_14'] < STRONG_SIGNAL_RSI_OVERSOLD,
                 latest['MACD_12_26_9'] > latest['MACDs_12_26_9'] and prev['MACD_12_26_9'] < prev['MACDs_12_26_9'],
                 latest['OBV'] > prev['OBV']
             ]
 
-            sell_conditions = [
+            sell_cond = [
                 latest['EMA_10'] < latest['EMA_30'],
                 latest['RSI_14'] > STRONG_SIGNAL_RSI_OVERBOUGHT,
                 latest['MACD_12_26_9'] < latest['MACDs_12_26_9'] and prev['MACD_12_26_9'] > prev['MACDs_12_26_9'],
                 latest['OBV'] < prev['OBV']
             ]
 
-            side = None
-            if all(buy_conditions): side = 'buy'
-            elif all(sell_conditions): side = 'sell'
+            side = 'buy' if all(buy_cond) else 'sell' if all(sell_cond) else None
 
             if side:
                 price = latest['close']
                 atr = latest['ATRr_14']
-                
-                atr_percentage = (atr / price) * 100
-                volatility = "medium_volatility"
-                if atr_percentage > ATR_VOLATILITY_THRESHOLD_HIGH: volatility = "high_volatility"
-                elif atr_percentage < ATR_VOLATILITY_THRESHOLD_LOW: volatility = "low_volatility"
-                config = RISK_CONFIG[volatility]
+                atr_p = (atr / price) * 100
+                vol = "high_volatility" if atr_p > ATR_VOLATILITY_THRESHOLD_HIGH else "low_volatility" if atr_p < ATR_VOLATILITY_THRESHOLD_LOW else "medium_volatility"
+                config = RISK_CONFIG[vol]
 
-                if side == 'buy':
-                    sl = price - (config['sl_multiplier'] * atr)
-                    tp = price + (config['tp_multiplier'] * atr)
-                    reason = "EMA(bull) & RSI(OB) & MACD(cross_up) & OBV(up)"
-                    msg_header = "🟢 *LỆNH MUA MỚI (Tín hiệu hội tụ)*"
-                else: # sell
-                    sl = price + (config['sl_multiplier'] * atr)
-                    tp = price - (config['tp_multiplier'] * atr)
-                    reason = "EMA(bear) & RSI(OS) & MACD(cross_down) & OBV(down)"
-                    msg_header = "🟠 *LỆNH BÁN MỚI (Tín hiệu hội tụ)*"
+                sl = price - (config['sl_multiplier'] * atr) if side == 'buy' else price + (config['sl_multiplier'] * atr)
+                tp = price + (config['tp_multiplier'] * atr) if side == 'buy' else price - (config['tp_multiplier'] * atr)
                 
                 if manager.open_position(coin, side, price, POSITION_SIZE_USD, config['leverage'], sl, tp):
-                    msg = (f"{msg_header}\n\n"
-                           f"Cặp tiền: *{coin}*\n"
-                           f"Lý do: *{reason}*\n"
-                           f"Giá vào lệnh: `${price:,.4f}`\n"
-                           f"Đòn bẩy: *x{config['leverage']}* ({volatility})\n"
-                           f"Stoploss: `${sl:,.4f}`\n"
-                           f"Take Profit: `${tp:,.4f}`")
+                    msg = (f"🟢 *LỆNH {side.upper()} MỚI*\nCặp: {coin}\nGiá: {price}\nSL: {sl:.4f} | TP: {tp:.4f}")
                     send_telegram_message(msg)
                     print(msg)
 
-        time.sleep(15)
+        elapsed = time.time() - start_time
+        print(f"Hoàn thành chu kỳ trong {elapsed:.2f}s")
+        time.sleep(max(1, 30 - elapsed) if elapsed < 30 else 5)
 
 if __name__ == "__main__":
     if not all([API_KEY, SECRET_KEY, PASSPHRASE, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID]):
-        print("LỖI: Vui lòng cung cấp đầy đủ các biến môi trường.")
+        print("LỖI: Thiếu biến môi trường.")
     else:
         run_bot()
