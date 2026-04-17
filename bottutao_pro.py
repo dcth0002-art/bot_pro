@@ -59,7 +59,6 @@ def get_all_tickers():
         url = "https://www.okx.com/api/v5/market/tickers?instType=SWAP"
         response = requests.get(url, timeout=10)
         data = response.json().get('data', [])
-        # Chuyển thành dict {instId: last_price}
         return {item['instId']: float(item['last']) for item in data}
     except Exception as e:
         print(f"Lỗi khi lấy giá hàng loạt: {e}")
@@ -110,36 +109,50 @@ class TradeManager:
             elif (pos['side'] == 'buy' and price >= pos['tp']) or (pos['side'] == 'sell' and price <= pos['tp']):
                 reason = "Take Profit"
             if reason:
-                pnl = self.close_position(coin, price) # Đóng bằng giá hiện tại
+                # Lấy giá khớp thực tế (giá chặn lỗ hoặc chốt lời)
+                exit_price = pos['sl'] if reason == "Stoploss" else pos['tp']
+                pnl = self.close_position(coin, exit_price)
                 closed_trades.append({"coin": coin, "pnl": pnl, "reason": reason})
         return closed_trades
 
 # --- HÀM CHÍNH ---
 def run_bot():
     manager = TradeManager(DEMO_BALANCE_USD)
-    send_telegram_message(f"🚀 *Bot PRO v2.6 Tối ưu đã khởi động*\nQuét hàng loạt: {len(COIN_PAIRS_TO_TRADE)} cặp.")
+    send_telegram_message(f"🚀 *Bot PRO v2.6.1 đã khởi động*\nVốn: `${manager.balance:.2f}`\nTheo dõi: {len(COIN_PAIRS_TO_TRADE)} cặp.")
 
     while True:
         start_time = time.time()
         print(f"\n[{time.strftime('%H:%M:%S')}] Chu kỳ mới. Lệnh mở: {len(manager.open_positions)}")
         
-        # 1. Lấy giá toàn sàn trong 1 lần gọi (Cực nhanh)
+        # 1. Lấy giá toàn sàn
         current_prices = get_all_tickers()
         
         # 2. Kiểm tra đóng lệnh
         closed_trades = manager.check_positions(current_prices)
         for trade in closed_trades:
-            msg = (f"🔴 *ĐÓNG LỆNH ({trade['reason']})*\nCặp: {trade['coin']}\nPNL: ${trade['pnl']:.2f}\nSố dư: ${manager.balance:.2f}")
+            msg = (f"🔴 *LỆNH ĐÃ ĐÓNG ({trade['reason']})*\n\n"
+                   f"Cặp tiền: *{trade['coin']}*\n"
+                   f"Lời/Lỗ: *${trade['pnl']:.2f}*\n"
+                   f"Số dư mới: `${manager.balance:.2f}`")
             send_telegram_message(msg)
             print(msg)
+
+        if closed_trades:
+            pnl_total = manager.balance - DEMO_BALANCE_USD
+            pnl_percent = (pnl_total / DEMO_BALANCE_USD) * 100
+            pnl_sign = "+" if pnl_total >= 0 else ""
+            report = (f"📊 *BÁO CÁO TỔNG QUAN*\n\n"
+                      f"‣ *Số dư hiện tại:* `${manager.balance:,.2f}`\n"
+                      f"‣ *Tổng PNL:* `{pnl_sign}${pnl_total:,.2f}` (`{pnl_sign}{pnl_percent:.2f}%`)\n"
+                      f"‣ *Số lệnh đang mở:* `{len(manager.open_positions)}`")
+            send_telegram_message(report)
+            print(report)
 
         # 3. Quét tìm cơ hội mới
         for coin in COIN_PAIRS_TO_TRADE:
             if coin in manager.open_positions: continue
             
-            # Nghỉ ngắn để tránh bị OKX chặn IP khi quét 290 đồng
             time.sleep(0.05) 
-
             df = get_historical_data(coin, TIMEFRAME)
             if df is None or len(df) < 35: continue
 
@@ -181,7 +194,11 @@ def run_bot():
                 tp = price + (config['tp_multiplier'] * atr) if side == 'buy' else price - (config['tp_multiplier'] * atr)
                 
                 if manager.open_position(coin, side, price, POSITION_SIZE_USD, config['leverage'], sl, tp):
-                    msg = (f"🟢 *LỆNH {side.upper()} MỚI*\nCặp: {coin}\nGiá: {price}\nSL: {sl:.4f} | TP: {tp:.4f}")
+                    msg = (f"🟢 *LỆNH {side.upper()} MỚI*\n\n"
+                           f"Cặp tiền: *{coin}*\n"
+                           f"Giá vào: `${price:,.4f}`\n"
+                           f"Đòn bẩy: *x{config['leverage']}* ({vol})\n"
+                           f"SL: `${sl:,.4f}` | TP: `${tp:,.4f}`")
                     send_telegram_message(msg)
                     print(msg)
 
