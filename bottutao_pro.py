@@ -12,22 +12,22 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 # --- KẾT THÚC LẤY THÔNG TIN ---
 
+# --- HÀM TẢI DANH SÁCH COIN ---
+def load_coin_list():
+    """Tải danh sách coin từ file coin_list.txt."""
+    try:
+        with open("coin_list.txt", "r") as f:
+            coins = [line.strip() for line in f if line.strip() and not line.startswith("#")]
+        print(f"Đã tải {len(coins)} đồng coin từ coin_list.txt")
+        return coins
+    except FileNotFoundError:
+        print("Không tìm thấy file coin_list.txt. Sử dụng danh sách mặc định.")
+        return ["BTC-USDT-SWAP", "ETH-USDT-SWAP", "SOL-USDT-SWAP"] # Danh sách dự phòng
+# --- KẾT THÚC HÀM TẢI DANH SÁCH COIN ---
+
+
 # --- CẤU HÌNH BOT ---
-COIN_PAIRS_TO_TRADE = [
-    # Top-tier
-    "BTC-USDT-SWAP", "ETH-USDT-SWAP", "SOL-USDT-SWAP", 
-    # Major Alts
-    "XRP-USDT-SWAP", "DOGE-USDT-SWAP", "ADA-USDT-SWAP", 
-    "AVAX-USDT-SWAP", "DOT-USDT-SWAP", "MATIC-USDT-SWAP",
-    "LTC-USDT-SWAP", "BCH-USDT-SWAP", "LINK-USDT-SWAP",
-    # High-Volume
-    "OP-USDT-SWAP", "ARB-USDT-SWAP", "NEAR-USDT-SWAP",
-    "AAVE-USDT-SWAP", "UNI-USDT-SWAP", "FTM-USDT-SWAP",
-    # Trending/Popular
-    "WLD-USDT-SWAP", "PEPE-USDT-SWAP", "SUI-USDT-SWAP",
-    "FIL-USDT-SWAP", "ETC-USDT-SWAP", "ICP-USDT-SWAP",
-    "TON-USDT-SWAP"
-]
+COIN_PAIRS_TO_TRADE = load_coin_list()
 TIMEFRAME = "15m"
 DEMO_BALANCE_USD = 500.0
 POSITION_SIZE_USD = 50.0
@@ -122,7 +122,7 @@ class TradeManager:
 # --- HÀM CHÍNH CỦA BOT ---
 def run_bot():
     manager = TradeManager(DEMO_BALANCE_USD)
-    send_telegram_message(f"🚀 *Bot Giao Dịch PRO (v2.4) đã khởi động* 🚀\nVốn ban đầu: ${manager.balance:.2f}\nChiến lược: EMA, RSI, MACD, OBV")
+    send_telegram_message(f"🚀 *Bot Giao Dịch PRO (v2.5) đã khởi động* 🚀\nVốn ban đầu: ${manager.balance:.2f}\nĐang theo dõi: {len(COIN_PAIRS_TO_TRADE)} cặp tiền.")
 
     while True:
         print(f"\n[{time.strftime('%H:%M:%S')}] Bắt đầu chu kỳ quét... Số dư: ${manager.balance:.2f}, Lệnh mở: {len(manager.open_positions)}")
@@ -133,10 +133,8 @@ def run_bot():
             if df_price is not None:
                 current_prices[coin] = df_price['close'].iloc[0]
 
-        # Kiểm tra và đóng các vị thế chạm SL/TP
         closed_trades = manager.check_positions(current_prices)
         
-        # Gửi thông báo cho từng lệnh đã đóng
         for trade in closed_trades:
             msg = (f"🔴 *LỆNH ĐÃ ĐÓNG ({trade['reason']})*\n\n"
                    f"Cặp tiền: *{trade['coin']}*\n"
@@ -145,7 +143,6 @@ def run_bot():
             send_telegram_message(msg)
             print(msg)
 
-        # Nếu có lệnh vừa đóng, gửi báo cáo tổng quan ngay lập tức
         if closed_trades:
             print("Một hoặc nhiều lệnh đã đóng, gửi báo cáo tổng quan...")
             pnl = manager.balance - DEMO_BALANCE_USD
@@ -161,7 +158,6 @@ def run_bot():
             send_telegram_message(report_message)
             print(report_message)
 
-        # Phân tích và tìm tín hiệu mới
         for coin in COIN_PAIRS_TO_TRADE:
             if coin in manager.open_positions:
                 continue
@@ -170,7 +166,6 @@ def run_bot():
             if df is None or len(df) < 35:
                 continue
 
-            # --- TÍNH TOÁN TẤT CẢ CÁC CHỈ BÁO ---
             df.ta.ema(length=10, append=True)
             df.ta.ema(length=30, append=True)
             df.ta.rsi(length=14, append=True)
@@ -181,7 +176,6 @@ def run_bot():
             latest = df.iloc[0]
             prev = df.iloc[1]
 
-            # --- KIỂM TRA ĐIỀU KIỆN MUA ---
             buy_conditions = [
                 latest['EMA_10'] > latest['EMA_30'],
                 latest['RSI_14'] < STRONG_SIGNAL_RSI_OVERSOLD,
@@ -189,7 +183,6 @@ def run_bot():
                 latest['OBV'] > prev['OBV']
             ]
 
-            # --- KIỂM TRA ĐIỀU KIỆN BÁN ---
             sell_conditions = [
                 latest['EMA_10'] < latest['EMA_30'],
                 latest['RSI_14'] > STRONG_SIGNAL_RSI_OVERBOUGHT,
@@ -233,7 +226,7 @@ def run_bot():
                     send_telegram_message(msg)
                     print(msg)
 
-        time.sleep(15) # <<< THAY ĐỔI: Giảm thời gian chờ xuống 15 giây
+        time.sleep(15)
 
 if __name__ == "__main__":
     if not all([API_KEY, SECRET_KEY, PASSPHRASE, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID]):
