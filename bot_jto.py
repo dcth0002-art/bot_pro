@@ -18,8 +18,7 @@ CHECK_INTERVAL = 10  # Giây (Thời gian mỗi lần kiểm tra giá và khối
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-# --- KHỞI TẠO EXCHANGE (Sử dụng OKX hoặc Binance công khai để lấy dữ liệu) ---
-# Ở đây dùng CCXT để lấy dữ liệu thị trường
+# --- KHỞI TẠO EXCHANGE ---
 exchange = ccxt.okx() 
 
 bot = telebot.TeleBot(TELEGRAM_TOKEN) if TELEGRAM_TOKEN else None
@@ -56,7 +55,7 @@ class TradingBot:
             return None, 0, 0
 
     def run(self):
-        send_telegram(f"🚀 *Bot JTO/USDT Demo đã khởi động!*\n- Vốn: ${self.balance}\n- Đòn bẩy: {LEVERAGE}x\n- Mỗi lệnh: ${TRADE_AMOUNT}")
+        send_telegram(f"🚀 *Bot JTO/USDT Demo đã khởi động!*\n- Vốn ban đầu: `${INITIAL_BALANCE:,.2f}`\n- Đòn bẩy: `{LEVERAGE}x`\n- Mỗi lệnh: `${TRADE_AMOUNT:,.2f}`")
         
         while True:
             price, buy_vol, sell_vol = self.get_market_data()
@@ -74,18 +73,18 @@ class TradingBot:
             if self.current_position is None:
                 self.open_position(signal, price, buy_vol, sell_vol)
             
-            # 2. Nếu đang LONG mà tín hiệu đổi sang SELL (Khối lượng bán cao hơn)
+            # 2. Nếu đang LONG mà tín hiệu đổi sang SELL
             elif self.current_position == 'long' and signal == 'sell':
                 self.close_position(price)
                 self.open_position('sell', price, buy_vol, sell_vol)
                 
-            # 3. Nếu đang SHORT mà tín hiệu đổi sang BUY (Khối lượng mua cao hơn)
+            # 3. Nếu đang SHORT mà tín hiệu đổi sang BUY
             elif self.current_position == 'short' and signal == 'buy':
                 self.close_position(price)
                 self.open_position('buy', price, buy_vol, sell_vol)
             
-            # Log trạng thái nhẹ nhàng
-            print(f"[{SYMBOL}] Giá: {price} | Buy Vol: {buy_vol:.2f} | Sell Vol: {sell_vol:.2f} | Pos: {self.current_position}")
+            # Log trạng thái nhẹ nhàng vào console
+            print(f"[{SYMBOL}] Giá: {price:,.4f} | B-Vol: {buy_vol:,.2f} | S-Vol: {sell_vol:,.2f} | Pos: {self.current_position}")
             
             time.sleep(CHECK_INTERVAL)
 
@@ -99,9 +98,10 @@ class TradingBot:
         action = "LONG (MUA)" if side == 'buy' else "SHORT (BÁN)"
         msg = (
             f"{emoji} *VÀO LỆNH {action}*\n"
-            f"💰 Giá vào: `{price}`\n"
-            f"📊 Khối lượng Mua: `{b_vol:.2f}` | Bán: `{s_vol:.2f}`\n"
-            f"💵 Quy mô: ${TRADE_AMOUNT} (x{LEVERAGE})"
+            f"💰 Giá vào: `{price:,.4f}`\n"
+            f"📊 Khối lượng Mua: `{b_vol:,.2f}`\n"
+            f"📊 Khối lượng Bán: `{s_vol:,.2f}`\n"
+            f"💵 Quy mô: `${TRADE_AMOUNT:,.2f}` (x{LEVERAGE})"
         )
         send_telegram(msg)
 
@@ -120,9 +120,14 @@ class TradingBot:
         
         msg = (
             f"{emoji} *ĐÓNG LỆNH {self.current_position.upper()}*\n"
-            f"🏁 Giá đóng: `{price}`\n"
-            f"💵 PnL: `{pnl:.2f}$` ({status})\n"
-            f"🏦 Số dư Demo: `{self.balance:.2f}$`"
+            f"🏁 Giá vào: `{self.entry_price:,.4f}`\n"
+            f"🏁 Giá đóng: `{price:,.4f}`\n"
+            f"💵 PnL lệnh này: `{pnl:,.2f}$` ({status})\n"
+            f"--------------------------\n"
+            f"🏦 *TỔNG KẾT TÀI KHOẢN:*\n"
+            f"💰 Vốn gốc: `${INITIAL_BALANCE:,.2f}`\n"
+            f"💵 Số dư hiện tại: `${self.balance:,.2f}`\n"
+            f"📈 Tổng Lời/Lỗ: `{self.balance - INITIAL_BALANCE:,.2f}$`"
         )
         send_telegram(msg)
         self.current_position = None
