@@ -8,7 +8,7 @@ from collections import deque
 # Load biến môi trường
 load_dotenv()
 
-# --- CẤU HÌNH ---
+# --- CẤU HÌ ---
 SYMBOLS = [
     'BTC/USDT', 'JTO/USDT', 'ETH/USDT', 'DOGE/USDT', 
     'SOL/USDT', 'XRP/USDT', 'BCH/USDT', 'LTC/USDT',
@@ -23,7 +23,7 @@ VOL_WINDOW_SIZE = 1800
 COOLDOWN_PERIOD = 300 # Tăng lên 5 phút để tránh bị cuốn vào sideway
 VOL_DIFF_THRESHOLD = 0.50 
 CONFIRMATION_TIME = 60 
-PRICE_SURGE_THRESHOLD = 0.001 # 0.1% (tương đương 1% trên đòn bẩy 10x)
+PRICE_SURGE_THRESHOLD = 0.002 # 0.2% (tương đương 2% trên đòn bẩy 10x)
 STATUS_REPORT_INTERVAL = 600 
 
 # --- THÔNG TIN TELEGRAM ---
@@ -101,7 +101,7 @@ class TradingBot:
             return None
 
     def run(self):
-        send_telegram(f"🚀 *Bot Săn Lệnh Cao Cấp đã khởi động!*\n- Yêu cầu bùng nổ: `0.1%` trong 60s\n- Nghỉ sau lệnh: `5 phút` để diệt nhiễu.")
+        send_telegram(f"🚀 *Bot Săn Lệnh Cao Cấp đã khởi động!*\n- Yêu cầu bùng nổ: `0.2%` (2% x10) trong 60s\n- Nghỉ sau lệnh: `5 phút` để diệt nhiễu.")
         
         while True:
             current_time = time.time()
@@ -150,7 +150,7 @@ class TradingBot:
                                         self.open_position(symbol, 'buy', current_price, buy_diff, price_change)
                                         break
                                     else:
-                                        print(f"❌ [{symbol}] Hết 60s giá chỉ tăng {price_change*100:.2f}%, quá yếu.")
+                                        print(f"❌ [{symbol}] Hết 60s giá chỉ tăng {price_change*100:.2f}%, yêu cầu 0.2%.")
                                         c['pending_side'] = None
                             
                             elif c['pending_side'] == 'sell':
@@ -161,7 +161,7 @@ class TradingBot:
                                         self.open_position(symbol, 'sell', current_price, sell_diff, price_change)
                                         break
                                     else:
-                                        print(f"❌ [{symbol}] Hết 60s giá chỉ giảm {abs(price_change)*100:.2f}%, quá yếu.")
+                                        print(f"❌ [{symbol}] Hết 60s giá chỉ giảm {abs(price_change)*100:.2f}%, yêu cầu 0.2%.")
                                         c['pending_side'] = None
                     time.sleep(0.05)
 
