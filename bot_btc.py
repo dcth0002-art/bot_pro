@@ -14,7 +14,8 @@ LEVERAGE = 10
 DEFAULT_TRADE_AMOUNT = 100
 INITIAL_BALANCE = 100
 CHECK_INTERVAL = 1
-WARMUP_PERIOD = 60 # 60s để tích lũy vol và lịch sử giá
+WARMUP_PERIOD = 300 # 300s = 5 phút để tích lũy vol ban đầu
+RESET_INTERVAL = 3600 # 1 tiếng
 
 # --- THÔNG TIN TELEGRAM ---
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -34,7 +35,7 @@ def send_telegram(message):
 class TradingBot:
     def __init__(self):
         self.balance = INITIAL_BALANCE
-        self.current_position = None  # 'buy', 'sell' hoặc None
+        self.current_position = None
         self.entry_price = 0
         self.amount_coin = 0
         self.current_trade_amount = 0
@@ -43,14 +44,24 @@ class TradingBot:
         self.total_sell_vol = 0.0
         self.last_trade_id = None
         self.start_time = time.time()
+        self.last_reset_time = time.time()
         self.is_warmed_up = False
         
-        # Lưu lịch sử giá để so sánh với 1 phút trước (60 giây)
-        self.price_history = deque(maxlen=65) # Lưu khoảng 60-65 điểm giá
+        # Lưu lịch sử giá (giữ 300 giây để có giá từ 5p trước nếu cần, nhưng hiện tại vẫn so với 1p trước)
+        self.price_history = deque(maxlen=310) 
 
     def update_data(self):
-        """Cập nhật vol tích lũy và lịch sử giá."""
         try:
+            current_time = time.time()
+            if current_time - self.last_reset_time >= RESET_INTERVAL:
+                if self.current_position is None:
+                    self.total_buy_vol = 0.0
+                    self.total_sell_vol = 0.0
+                    self.last_reset_time = current_time
+                    send_telegram("🔄 *Hệ thống đã reset Volume về 0 (Chu kỳ 1h mới).*")
+                else:
+                    print("Đã đến lúc reset nhưng đang có lệnh mở, chờ lệnh đóng...")
+
             # 1. Cập nhật Volume
             trades = exchange.fetch_trades(SYMBOL, limit=100)
             new_trades = []
@@ -81,7 +92,7 @@ class TradingBot:
             return None
 
     def run(self):
-        send_telegram(f"🚀 *Bot BTC/USDT Chặt Chẽ đã khởi động!*\n- Chiến thuật: Vol + Giá 1p\n- Đang tích lũy dữ liệu {WARMUP_PERIOD}s...")
+        send_telegram(f"🚀 *Bot BTC/USDT (Smart Reset) đã khởi động!*\n- Chờ tích lũy ban đầu: `5 phút`\n- Reset Vol: `1 tiếng` (khi rảnh)")
         
         while True:
             current_price = self.update_data()
@@ -91,24 +102,26 @@ class TradingBot:
 
             elapsed_time = time.time() - self.start_time
             if not self.is_warmed_up:
-                if elapsed_time >= WARMUP_PERIOD and len(self.price_history) >= 60:
+                # Kiểm tra xem đã qua 5 phút (300 giây) chưa
+                if elapsed_time >= WARMUP_PERIOD:
                     self.is_warmed_up = True
-                    send_telegram("✅ *Tích lũy xong!* Bắt đầu quét tín hiệu.")
+                    send_telegram("✅ *Tích lũy xong 5 phút dữ liệu!* Bắt đầu quét tín hiệu giao dịch.")
                 else:
-                    print(f"Đang khởi động {elapsed_time:.0f}s...")
+                    remaining = WARMUP_PERIOD - int(elapsed_time)
+                    if remaining % 60 == 0: # Cập nhật mỗi phút một lần vào console
+                        print(f"Đang tích lũy dữ liệu... còn {remaining}s")
                     time.sleep(CHECK_INTERVAL)
                     continue
 
-            # Lấy giá 1 phút trước (phần tử đầu tiên trong deque nếu mỗi giây append 1 lần)
-            price_1m_ago = self.price_history[0]
+            # Lấy giá 1 phút trước (60 giây trước) để so sánh xu hướng
+            # Vì mỗi giây append 1 lần, giá 1p trước nằm ở vị trí len - 60
+            price_1m_ago = self.price_history[-60] if len(self.price_history) >= 60 else self.price_history[0]
             
-            # ĐIỀU KIỆN
             vol_buy_dominant = self.total_buy_vol > self.total_sell_vol
             vol_sell_dominant = self.total_sell_vol > self.total_buy_vol
             price_uptrend = current_price > price_1m_ago
             price_downtrend = current_price < price_1m_ago
 
-            # LOGIC VÀO LỆNH / GIỮ LỆNH
             if self.current_position is None:
                 if vol_buy_dominant and price_uptrend:
                     if self.balance > 0: self.open_position('buy', current_price)
@@ -116,18 +129,16 @@ class TradingBot:
                     if self.balance > 0: self.open_position('sell', current_price)
             
             elif self.current_position == 'buy':
-                # Đóng nếu vi phạm 1 trong 2 điều kiện
                 if not vol_buy_dominant or not price_uptrend:
                     reason = "Vol đảo chiều" if not vol_buy_dominant else "Giá yếu đi"
                     self.close_position(current_price, reason)
             
             elif self.current_position == 'sell':
-                # Đóng nếu vi phạm 1 trong 2 điều kiện
                 if not vol_sell_dominant or not price_downtrend:
                     reason = "Vol đảo chiều" if not vol_sell_dominant else "Giá mạnh lên"
                     self.close_position(current_price, reason)
 
-            print(f"[{SYMBOL}] {current_price:,.2f} | Mua: {self.total_buy_vol:.3f} | Bán: {self.total_sell_vol:.3f} | 1p trước: {price_1m_ago:,.2f}")
+            print(f"[{SYMBOL}] {current_price:,.2f} | B:{self.total_buy_vol:.3f} S:{self.total_sell_vol:.3f} | 1p:{price_1m_ago:,.2f}")
             time.sleep(CHECK_INTERVAL)
 
     def open_position(self, side, price):
@@ -141,7 +152,7 @@ class TradingBot:
         msg = (
             f"{emoji} *VÀO LỆNH {action}*\n"
             f"💰 Giá vào: `{price:,.2f}`\n"
-            f"📊 Vol Mua: `{self.total_buy_vol:.3f}` | Bán: `{self.total_sell_vol:.3f}`\n"
+            f"📊 Vol Mua: `{self.total_buy_vol:.4f}` | Bán: `{self.total_sell_vol:.4f}`\n"
             f"💵 Quy mô: `${self.current_trade_amount:,.2f}`"
         )
         send_telegram(msg)
@@ -154,10 +165,8 @@ class TradingBot:
             
         self.balance += pnl
         status = "LÃI" if pnl > 0 else "LỖ"
-        emoji = "⚠️"
-        
         msg = (
-            f"{emoji} *ĐÓNG LỆNH (Chờ cơ hội mới)*\n"
+            f"⚠️ *ĐÓNG LỆNH*\n"
             f"📝 Lý do: {reason}\n"
             f"🏁 Giá đóng: `{price:,.2f}`\n"
             f"💵 PnL: `{pnl:,.2f}$` ({status})\n"
