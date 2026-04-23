@@ -1,1 +1,1 @@
-worker: python bot_jto.py
+worker: python bot_btc.py
