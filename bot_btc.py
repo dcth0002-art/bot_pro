@@ -17,6 +17,7 @@ CHECK_INTERVAL = 1
 WARMUP_PERIOD = 300 
 RESET_INTERVAL = 3600 
 VOL_DIFF_THRESHOLD = 0.50 # Chênh lệch 50%
+STATUS_REPORT_INTERVAL = 600 # 600 giây = 10 phút báo cáo 1 lần
 
 # --- THÔNG TIN TELEGRAM ---
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -46,6 +47,7 @@ class TradingBot:
         self.last_trade_id = None
         self.start_time = time.time()
         self.last_reset_time = time.time()
+        self.last_status_time = time.time()
         self.is_warmed_up = False
         
         self.price_history = deque(maxlen=310) 
@@ -89,8 +91,24 @@ class TradingBot:
             print(f"Lỗi cập nhật dữ liệu: {e}")
             return None
 
+    def send_periodic_status(self, price, price_3p, buy_diff, sell_diff):
+        """Gửi báo cáo trạng thái thị trường mỗi 10 phút."""
+        trend = "TĂNG 📈" if price > price_3p else "GIẢM 📉"
+        diff_val = buy_diff if buy_diff > sell_diff else sell_diff
+        side_str = "MUA" if buy_diff > sell_diff else "BÁN"
+        
+        status_msg = (
+            f"📊 *BÁO CÁO ĐỊNH KỲ (10 PHÚT)*\n"
+            f"💰 Giá hiện tại: `{price:,.2f}`\n"
+            f"🔄 Xu hướng 3p: `{trend}` (So với: {price_3p:,.2f})\n"
+            f"⚖️ Chênh lệch Vol: `{side_str} +{diff_val*100:.1f}%`\n"
+            f"📍 Vị thế: `{'Đang trống' if self.current_position is None else self.current_position.upper()}`\n"
+            f"🏦 Số dư: `${self.balance:,.2f}`"
+        )
+        send_telegram(status_msg)
+
     def run(self):
-        send_telegram(f"🚀 *Bot BTC/USDT (Chặt chẽ) đã khởi động!*\n- Chênh lệch Vol yêu cầu: `>50%` để VÀO LỆNH\n- Tự động đóng lệnh nếu Vol yếu hoặc Giá đảo chiều.")
+        send_telegram(f"🚀 *Bot BTC/USDT (Giám sát chặt) đã khởi động!*\n- Báo cáo định kỳ: mỗi 10 phút\n- Quét tín hiệu: 3p & Vol 50%")
         
         while True:
             current_price = self.update_data()
@@ -98,7 +116,9 @@ class TradingBot:
                 time.sleep(CHECK_INTERVAL)
                 continue
 
-            elapsed_time = time.time() - self.start_time
+            current_time = time.time()
+            elapsed_time = current_time - self.start_time
+            
             if not self.is_warmed_up:
                 if elapsed_time >= WARMUP_PERIOD:
                     self.is_warmed_up = True
@@ -107,41 +127,44 @@ class TradingBot:
                     time.sleep(CHECK_INTERVAL)
                     continue
 
-            price_1m_ago = self.price_history[-60] if len(self.price_history) >= 60 else self.price_history[0]
+            # Lấy giá 3 phút trước
+            price_trend_ago = self.price_history[-180] if len(self.price_history) >= 180 else self.price_history[0]
             
             # Tính % chênh lệch
             buy_diff = (self.total_buy_vol - self.total_sell_vol) / self.total_sell_vol if self.total_sell_vol > 0 else 1.0
             sell_diff = (self.total_sell_vol - self.total_buy_vol) / self.total_buy_vol if self.total_buy_vol > 0 else 1.0
 
+            # Gửi báo cáo định kỳ mỗi 10 phút
+            if current_time - self.last_status_time >= STATUS_REPORT_INTERVAL:
+                self.send_periodic_status(current_price, price_trend_ago, buy_diff, sell_diff)
+                self.last_status_time = current_time
+
             vol_buy_strong = buy_diff > VOL_DIFF_THRESHOLD
             vol_sell_strong = sell_diff > VOL_DIFF_THRESHOLD
-            price_uptrend = current_price > price_1m_ago
-            price_downtrend = current_price < price_1m_ago
+            price_uptrend = current_price > price_trend_ago
+            price_downtrend = current_price < price_trend_ago
 
             # LOGIC GIAO DỊCH
             if self.current_position is None:
-                # VÀO LỆNH KHI ĐỦ 50% VÀ ĐÚNG HƯỚNG GIÁ
                 if vol_buy_strong and price_uptrend:
-                    if self.balance > 0: self.open_position('buy', current_price)
+                    if self.balance > 0: self.open_position('buy', current_price, buy_diff)
                 elif vol_sell_strong and price_downtrend:
-                    if self.balance > 0: self.open_position('sell', current_price)
+                    if self.balance > 0: self.open_position('sell', current_price, sell_diff)
             
             elif self.current_position == 'buy':
-                # Đóng lệnh nếu Vol Mua không còn mạnh hơn 50% HOẶC giá không còn tăng
                 if not vol_buy_strong or not price_uptrend:
-                    reason = "Vol Mua yếu (<50%)" if not vol_buy_strong else "Giá bắt đầu giảm"
+                    reason = f"Vol Mua yếu ({buy_diff*100:.1f}%)" if not vol_buy_strong else f"Giá quay đầu ({current_price:,.2f} < {price_trend_ago:,.2f})"
                     self.close_position(current_price, reason)
             
             elif self.current_position == 'sell':
-                # Đóng lệnh nếu Vol Bán không còn mạnh hơn 50% HOẶC giá không còn giảm
                 if not vol_sell_strong or not price_downtrend:
-                    reason = "Vol Bán yếu (<50%)" if not vol_sell_strong else "Giá bắt đầu tăng"
+                    reason = f"Vol Bán yếu ({sell_diff*100:.1f}%)" if not vol_sell_strong else f"Giá quay đầu ({current_price:,.2f} > {price_trend_ago:,.2f})"
                     self.close_position(current_price, reason)
 
-            print(f"[{SYMBOL}] {current_price:,.2f} | Mua:{self.total_buy_vol:.3f} ({buy_diff*100:.1f}%) | Bán:{self.total_sell_vol:.3f} ({sell_diff*100:.1f}%)")
+            print(f"[{SYMBOL}] {current_price:,.2f} | B:{buy_diff*100:.1f}% | S:{sell_diff*100:.1f}% | 3p:{price_trend_ago:,.2f}")
             time.sleep(CHECK_INTERVAL)
 
-    def open_position(self, side, price):
+    def open_position(self, side, price, diff):
         self.current_position = side
         self.entry_price = price
         self.current_trade_amount = min(self.balance, DEFAULT_TRADE_AMOUNT)
@@ -150,16 +173,11 @@ class TradingBot:
         emoji = "🟢" if side == 'buy' else "🔴"
         action = "LONG" if side == 'buy' else "SHORT"
         
-        diff = 0
-        if side == 'buy' and self.total_sell_vol > 0:
-            diff = (self.total_buy_vol - self.total_sell_vol) / self.total_sell_vol
-        elif side == 'sell' and self.total_buy_vol > 0:
-            diff = (self.total_sell_vol - self.total_buy_vol) / self.total_buy_vol
-
         msg = (
             f"{emoji} *VÀO LỆNH {action}*\n"
             f"💰 Giá vào: `{price:,.2f}`\n"
             f"📊 Chênh lệch Vol: `+{diff*100:.1f}%` 🔥\n"
+            f"📈 Xu hướng: Đang hội tụ\n"
             f"💵 Quy mô: `${self.current_trade_amount:,.2f}`"
         )
         send_telegram(msg)
@@ -175,6 +193,7 @@ class TradingBot:
         msg = (
             f"⚠️ *ĐÓNG LỆNH*\n"
             f"📝 Lý do: {reason}\n"
+            f"🏁 Giá vào: `{self.entry_price:,.2f}`\n"
             f"🏁 Giá đóng: `{price:,.2f}`\n"
             f"💵 PnL: `{pnl:,.2f}$` ({status})\n"
             f"🏦 Số dư: `${self.balance:,.2f}`"
