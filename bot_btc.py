@@ -12,8 +12,8 @@ SYMBOL = 'BTC/USDT'  # Cặp giao dịch
 LEVERAGE = 10        # Đòn bẩy
 DEFAULT_TRADE_AMOUNT = 100 # Số tiền mặc định mỗi lệnh (USD)
 INITIAL_BALANCE = 100 # Vốn demo ban đầu
-CHECK_INTERVAL = 1   # Giây (Đã giảm xuống 1 giây để quét liên tục)
-TRADES_LIMIT = 100   # Số lượng giao dịch gần nhất để tính khối lượng
+CHECK_INTERVAL = 1   # Giây
+TRADES_LIMIT = 500   # Số lượng giao dịch gần nhất để tính khối lượng (Đã tăng lên 500)
 
 # --- THÔNG TIN TELEGRAM ---
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -55,7 +55,7 @@ class TradingBot:
             return None, 0, 0
 
     def run(self):
-        send_telegram(f"🚀 *Bot BTC/USDT Demo (Quét nhanh 1s) đã khởi động!*\n- Vốn: `${self.balance:,.2f}`\n- Đòn bẩy: `{LEVERAGE}x`\n- Lệnh tối đa: `${DEFAULT_TRADE_AMOUNT:,.2f}`")
+        send_telegram(f"🚀 *Bot BTC/USDT Demo (500 Trades) đã khởi động!*\n- Vốn: `${self.balance:,.2f}`\n- Đòn bẩy: `{LEVERAGE}x`\n- Lệnh tối đa: `${DEFAULT_TRADE_AMOUNT:,.2f}`\n- Phân tích: `{TRADES_LIMIT}` giao dịch gần nhất")
         
         while True:
             price, buy_vol, sell_vol = self.get_market_data()
@@ -80,7 +80,6 @@ class TradingBot:
                 if self.balance > 0:
                     self.open_position('buy', price, buy_vol, sell_vol)
             
-            # Log console để bạn theo dõi trên Railway
             print(f"[{SYMBOL}] Giá: {price:,.2f} | B-Vol: {buy_vol:,.4f} | S-Vol: {sell_vol:,.4f} | Pos: {self.current_position}")
             
             time.sleep(CHECK_INTERVAL)
