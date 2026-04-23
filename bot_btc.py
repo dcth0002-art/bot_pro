@@ -12,8 +12,8 @@ SYMBOL = 'BTC/USDT'  # Cặp giao dịch
 LEVERAGE = 10        # Đòn bẩy
 DEFAULT_TRADE_AMOUNT = 100 # Số tiền mặc định mỗi lệnh (USD)
 INITIAL_BALANCE = 100 # Vốn demo ban đầu
-CHECK_INTERVAL = 1   # Giây
-TRADES_LIMIT = 500   # Số lượng giao dịch gần nhất để tính khối lượng (Đã tăng lên 500)
+CHECK_INTERVAL = 1   # Giây (Quét liên tục)
+WARMUP_PERIOD = 60   # Giây (Thời gian chờ tích lũy khối lượng ban đầu)
 
 # --- THÔNG TIN TELEGRAM ---
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -38,53 +38,91 @@ class TradingBot:
         self.current_position = None  # 'buy', 'sell' hoặc None
         self.entry_price = 0
         self.amount_coin = 0
-        self.current_trade_amount = 0 # Số tiền thực tế dùng cho lệnh hiện tại
+        self.current_trade_amount = 0
+        
+        # Khối lượng cộng dồn
+        self.total_buy_vol = 0.0
+        self.total_sell_vol = 0.0
+        self.last_trade_id = None
+        self.start_time = time.time()
+        self.is_warmed_up = False
 
-    def get_market_data(self):
+    def update_cumulative_volume(self):
+        """Lấy các giao dịch mới nhất và cộng dồn vào tổng khối lượng."""
         try:
-            ticker = exchange.fetch_ticker(SYMBOL)
-            price = ticker['last']
+            # Lấy 100 giao dịch mới nhất để đảm bảo không bỏ lỡ trong 1s nghỉ
+            trades = exchange.fetch_trades(SYMBOL, limit=100)
             
-            trades = exchange.fetch_trades(SYMBOL, limit=TRADES_LIMIT)
-            buy_volume = sum(t['amount'] for t in trades if t['side'] == 'buy')
-            sell_volume = sum(t['amount'] for t in trades if t['side'] == 'sell')
+            new_trades = []
+            if self.last_trade_id is None:
+                new_trades = trades
+            else:
+                # Tìm các giao dịch có ID mới hơn ID cuối cùng đã lưu
+                for trade in reversed(trades):
+                    if trade['id'] == self.last_trade_id:
+                        break
+                    new_trades.insert(0, trade)
             
-            return price, buy_volume, sell_volume
+            if new_trades:
+                for t in new_trades:
+                    if t['side'] == 'buy':
+                        self.total_buy_vol += t['amount']
+                    else:
+                        self.total_sell_vol += t['amount']
+                self.last_trade_id = new_trades[-1]['id']
+                
+            return True
         except Exception as e:
-            print(f"Lỗi lấy dữ liệu thị trường: {e}")
-            return None, 0, 0
+            print(f"Lỗi cập nhật khối lượng: {e}")
+            return False
 
     def run(self):
-        send_telegram(f"🚀 *Bot BTC/USDT Demo (500 Trades) đã khởi động!*\n- Vốn: `${self.balance:,.2f}`\n- Đòn bẩy: `{LEVERAGE}x`\n- Lệnh tối đa: `${DEFAULT_TRADE_AMOUNT:,.2f}`\n- Phân tích: `{TRADES_LIMIT}` giao dịch gần nhất")
+        send_telegram(f"🚀 *Bot BTC/USDT Tích Lũy Khối Lượng đã khởi động!*\n- Vốn: `${self.balance:,.2f}`\n- Đòn bẩy: `{LEVERAGE}x`\n- Đang chờ {WARMUP_PERIOD}s để tích lũy dữ liệu ban đầu...")
         
         while True:
-            price, buy_vol, sell_vol = self.get_market_data()
+            # Cập nhật khối lượng cộng dồn liên tục
+            success = self.update_cumulative_volume()
             
-            if price is None:
+            try:
+                ticker = exchange.fetch_ticker(SYMBOL)
+                current_price = ticker['last']
+            except:
                 time.sleep(CHECK_INTERVAL)
                 continue
 
-            signal = 'buy' if buy_vol > sell_vol else 'sell'
+            elapsed_time = time.time() - self.start_time
             
+            # Kiểm tra xem đã qua thời gian khởi động (warmup) chưa
+            if not self.is_warmed_up:
+                if elapsed_time >= WARMUP_PERIOD:
+                    self.is_warmed_up = True
+                    send_telegram("✅ *Kết thúc 60s tích lũy!* Bắt đầu giao dịch dựa trên khối lượng cộng dồn.")
+                else:
+                    print(f"Đang tích lũy... {elapsed_time:.0f}s | B-Vol: {self.total_buy_vol:.4f} | S-Vol: {self.total_sell_vol:.4f}")
+                    time.sleep(CHECK_INTERVAL)
+                    continue
+
+            # Xác định tín hiệu dựa trên KHỐI LƯỢNG CỘNG DỒN
+            signal = 'buy' if self.total_buy_vol > self.total_sell_vol else 'sell'
+            
+            # Logic giao dịch
             if self.current_position is None:
                 if self.balance > 0:
-                    self.open_position(signal, price, buy_vol, sell_vol)
-                else:
-                    print("Tài khoản đã hết số dư để giao dịch.")
+                    self.open_position(signal, current_price)
             elif self.current_position == 'buy' and signal == 'sell':
-                self.close_position(price)
+                self.close_position(current_price)
                 if self.balance > 0:
-                    self.open_position('sell', price, buy_vol, sell_vol)
+                    self.open_position('sell', current_price)
             elif self.current_position == 'sell' and signal == 'buy':
-                self.close_position(price)
+                self.close_position(current_price)
                 if self.balance > 0:
-                    self.open_position('buy', price, buy_vol, sell_vol)
+                    self.open_position('buy', current_price)
             
-            print(f"[{SYMBOL}] Giá: {price:,.2f} | B-Vol: {buy_vol:,.4f} | S-Vol: {sell_vol:,.4f} | Pos: {self.current_position}")
+            print(f"[{SYMBOL}] Giá: {current_price:,.2f} | Tổng Mua: {self.total_buy_vol:.4f} | Tổng Bán: {self.total_sell_vol:.4f} | Pos: {self.current_position}")
             
             time.sleep(CHECK_INTERVAL)
 
-    def open_position(self, side, price, b_vol, s_vol):
+    def open_position(self, side, price):
         self.current_position = side
         self.entry_price = price
         self.current_trade_amount = min(self.balance, DEFAULT_TRADE_AMOUNT)
@@ -95,8 +133,8 @@ class TradingBot:
         msg = (
             f"{emoji} *VÀO LỆNH {action}*\n"
             f"💰 Giá vào: `{price:,.2f}`\n"
-            f"📊 Khối lượng Mua: `{b_vol:,.4f}`\n"
-            f"📊 Khối lượng Bán: `{s_vol:,.4f}`\n"
+            f"📊 Tổng Mua tích lũy: `{self.total_buy_vol:.4f}`\n"
+            f"📊 Tổng Bán tích lũy: `{self.total_sell_vol:.4f}`\n"
             f"💵 Quy mô: `${self.current_trade_amount:,.2f}` (x{LEVERAGE})"
         )
         send_telegram(msg)
@@ -124,7 +162,6 @@ class TradingBot:
         )
         send_telegram(msg)
         self.current_position = None
-        self.current_trade_amount = 0
 
 if __name__ == "__main__":
     bot_trading = TradingBot()
