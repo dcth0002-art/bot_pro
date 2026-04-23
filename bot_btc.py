@@ -16,7 +16,7 @@ INITIAL_BALANCE = 100
 CHECK_INTERVAL = 1
 WARMUP_PERIOD = 300 
 RESET_INTERVAL = 3600 
-VOL_DIFF_THRESHOLD = 0.50 # Chênh lệch 50%
+VOL_DIFF_THRESHOLD = 0.50 # Chênh lệch 50% để VÀO LỆNH
 STATUS_REPORT_INTERVAL = 600 # 600 giây = 10 phút báo cáo 1 lần
 
 # --- THÔNG TIN TELEGRAM ---
@@ -108,7 +108,7 @@ class TradingBot:
         send_telegram(status_msg)
 
     def run(self):
-        send_telegram(f"🚀 *Bot BTC/USDT (Giám sát chặt) đã khởi động!*\n- Báo cáo định kỳ: mỗi 10 phút\n- Quét tín hiệu: 3p & Vol 50%")
+        send_telegram(f"🚀 *Bot BTC/USDT (Cập nhật chiến thuật) đã khởi động!*\n- Vào lệnh: Chênh lệch Vol > 50% & Giá đúng hướng 3p\n- Đóng lệnh: Khi giá đảo chiều 3p (Không quan tâm Vol)")
         
         while True:
             current_price = self.update_data()
@@ -146,19 +146,22 @@ class TradingBot:
 
             # LOGIC GIAO DỊCH
             if self.current_position is None:
+                # Điều kiện vào lệnh: Vol chênh > 50% VÀ Giá đi đúng hướng
                 if vol_buy_strong and price_uptrend:
                     if self.balance > 0: self.open_position('buy', current_price, buy_diff)
                 elif vol_sell_strong and price_downtrend:
                     if self.balance > 0: self.open_position('sell', current_price, sell_diff)
             
             elif self.current_position == 'buy':
-                if not vol_buy_strong or not price_uptrend:
-                    reason = f"Vol Mua yếu ({buy_diff*100:.1f}%)" if not vol_buy_strong else f"Giá quay đầu ({current_price:,.2f} < {price_trend_ago:,.2f})"
+                # Đóng lệnh LONG: Chỉ đóng khi giá đảo chiều (không còn cao hơn 3p trước)
+                if not price_uptrend:
+                    reason = f"Giá đảo chiều/đi ngang ({current_price:,.2f} <= {price_trend_ago:,.2f})"
                     self.close_position(current_price, reason)
             
             elif self.current_position == 'sell':
-                if not vol_sell_strong or not price_downtrend:
-                    reason = f"Vol Bán yếu ({sell_diff*100:.1f}%)" if not vol_sell_strong else f"Giá quay đầu ({current_price:,.2f} > {price_trend_ago:,.2f})"
+                # Đóng lệnh SHORT: Chỉ đóng khi giá đảo chiều (không còn thấp hơn 3p trước)
+                if not price_downtrend:
+                    reason = f"Giá đảo chiều/đi ngang ({current_price:,.2f} >= {price_trend_ago:,.2f})"
                     self.close_position(current_price, reason)
 
             print(f"[{SYMBOL}] {current_price:,.2f} | B:{buy_diff*100:.1f}% | S:{sell_diff*100:.1f}% | 3p:{price_trend_ago:,.2f}")
@@ -177,7 +180,6 @@ class TradingBot:
             f"{emoji} *VÀO LỆNH {action}*\n"
             f"💰 Giá vào: `{price:,.2f}`\n"
             f"📊 Chênh lệch Vol: `+{diff*100:.1f}%` 🔥\n"
-            f"📈 Xu hướng: Đang hội tụ\n"
             f"💵 Quy mô: `${self.current_trade_amount:,.2f}`"
         )
         send_telegram(msg)
