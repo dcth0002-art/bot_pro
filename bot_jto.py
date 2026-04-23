@@ -9,11 +9,11 @@ load_dotenv()
 
 # --- CẤU HÌNH ---
 SYMBOL = 'JTO/USDT'  # Cặp giao dịch
-LEVERAGE = 5         # Đòn bẩy
-TRADE_AMOUNT = 10    # Số tiền mỗi lệnh (USD)
-INITIAL_BALANCE = 100 # Vốn demo ban đầu
-CHECK_INTERVAL = 10  # Giây (Thời gian mỗi lần kiểm tra giá và khối lượng)
-TRADES_LIMIT = 1000  # Số lượng giao dịch gần nhất để tính khối lượng
+LEVERAGE = 10        # Đòn bẩy
+TRADE_AMOUNT = 100   # Số tiền mỗi lệnh (USD)
+INITIAL_BALANCE = 100 # Vốn demo ban đầu (Đã đổi về 100$ theo yêu cầu)
+CHECK_INTERVAL = 10  # Giây
+TRADES_LIMIT = 100   # Số lượng giao dịch gần nhất để tính khối lượng
 
 # --- THÔNG TIN TELEGRAM ---
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -41,7 +41,6 @@ class TradingBot:
         self.total_pnl = 0
 
     def get_market_data(self):
-        """Lấy giá hiện tại và tính toán khối lượng mua/bán từ TRADES_LIMIT giao dịch gần nhất."""
         try:
             ticker = exchange.fetch_ticker(SYMBOL)
             price = ticker['last']
@@ -56,7 +55,7 @@ class TradingBot:
             return None, 0, 0
 
     def run(self):
-        send_telegram(f"🚀 *Bot JTO/USDT Demo đã khởi động!*\n- Vốn ban đầu: `${INITIAL_BALANCE:,.2f}`\n- Đòn bẩy: `{LEVERAGE}x`\n- Mỗi lệnh: `${TRADE_AMOUNT:,.2f}`\n- Phân tích: `{TRADES_LIMIT}` giao dịch gần nhất")
+        send_telegram(f"🚀 *Bot JTO/USDT Demo đã cập nhật!*\n- Vốn ban đầu: `${INITIAL_BALANCE:,.2f}`\n- Đòn bẩy: `{LEVERAGE}x`\n- Mỗi lệnh: `${TRADE_AMOUNT:,.2f}`\n- Phân tích: `{TRADES_LIMIT}` giao dịch gần nhất")
         
         while True:
             price, buy_vol, sell_vol = self.get_market_data()
@@ -65,28 +64,18 @@ class TradingBot:
                 time.sleep(CHECK_INTERVAL)
                 continue
 
-            # Xác định tín hiệu dựa trên khối lượng
             signal = 'buy' if buy_vol > sell_vol else 'sell'
             
-            # --- LOGIC GIAO DỊCH ---
-            
-            # 1. Nếu chưa có lệnh nào
             if self.current_position is None:
                 self.open_position(signal, price, buy_vol, sell_vol)
-            
-            # 2. Nếu đang BUY (LONG) mà tín hiệu đổi sang SELL (Khối lượng bán cao hơn)
             elif self.current_position == 'buy' and signal == 'sell':
                 self.close_position(price)
                 self.open_position('sell', price, buy_vol, sell_vol)
-                
-            # 3. Nếu đang SELL (SHORT) mà tín hiệu đổi sang BUY (Khối lượng mua cao hơn)
             elif self.current_position == 'sell' and signal == 'buy':
                 self.close_position(price)
                 self.open_position('buy', price, buy_vol, sell_vol)
             
-            # Log trạng thái nhẹ nhàng vào console của Railway
             print(f"[{SYMBOL}] Giá: {price:,.4f} | B-Vol: {buy_vol:,.2f} | S-Vol: {sell_vol:,.2f} | Pos: {self.current_position}")
-            
             time.sleep(CHECK_INTERVAL)
 
     def open_position(self, side, price, b_vol, s_vol):
@@ -107,14 +96,12 @@ class TradingBot:
         send_telegram(msg)
 
     def close_position(self, price):
-        # Tính PnL
         if self.current_position == 'buy':
             pnl = (price - self.entry_price) * self.amount_coin
         else:
             pnl = (self.entry_price - price) * self.amount_coin
             
         self.balance += pnl
-        
         status = "LÃI" if pnl > 0 else "LỖ"
         emoji = "✅" if pnl > 0 else "❌"
         
