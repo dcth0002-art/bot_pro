@@ -48,6 +48,8 @@ class TradingBot:
         self.active_symbol = None
         self.entry_price = 0
         self.amount_coin = 0
+        self.entry_time = 0
+        self.initial_velocity = 0
         
         self.coins = {}
         for symbol in SYMBOLS:
@@ -58,7 +60,7 @@ class TradingBot:
                 'pending_side': None,
                 'trigger_price': 0,
                 'trigger_time': 0,
-                'trigger_vol_diff': 0, # Lưu % Vol lúc bắt đầu chờ
+                'trigger_vol_diff': 0, 
                 'last_close_time': 0,
                 'total_buy_30p': 0.0,
                 'total_sell_30p': 0.0
@@ -102,7 +104,7 @@ class TradingBot:
             return None
 
     def run(self):
-        send_telegram(f"🚀 *Bot Săn Lệnh Cao Cấp (V3) đã khởi động!*\n- Yêu cầu: Giá bùng nổ `0.2%` & Vol tăng thêm sau 60s\n- Nghỉ sau lệnh: `5 phút` để diệt nhiễu.")
+        send_telegram(f"🚀 *Bot Săn Lệnh Động Lượng đã khởi động!*\n- Xác nhận: 60s & 2% Leverage\n- Giữ lệnh: Vận tốc hiện tại >= 70% vận tốc khởi đầu.")
         
         while True:
             current_time = time.time()
@@ -133,13 +135,13 @@ class TradingBot:
                                 c['trigger_price'] = current_price
                                 c['trigger_time'] = current_time
                                 c['trigger_vol_diff'] = buy_diff
-                                print(f"🔍 [{symbol}] Vol Mua mạnh (+{buy_diff*100:.1f}%)! Chờ xác nhận...")
+                                print(f"🔍 [{symbol}] Vol Mua mạnh! Chờ xác nhận bùng nổ...")
                             elif sell_diff > VOL_DIFF_THRESHOLD and current_price < price_trend_ago:
                                 c['pending_side'] = 'sell'
                                 c['trigger_price'] = current_price
                                 c['trigger_time'] = current_time
                                 c['trigger_vol_diff'] = sell_diff
-                                print(f"🔍 [{symbol}] Vol Bán mạnh (+{sell_diff*100:.1f}%)! Chờ xác nhận...")
+                                print(f"🔍 [{symbol}] Vol Bán mạnh! Chờ xác nhận bùng nổ...")
                         else:
                             elapsed = current_time - c['trigger_time']
                             price_change = (current_price - c['trigger_price']) / c['trigger_price']
@@ -148,26 +150,20 @@ class TradingBot:
                                 if current_price < c['trigger_price']:
                                     c['pending_side'] = None
                                 elif elapsed >= CONFIRMATION_TIME:
-                                    # KIỂM TRA ĐIỀU KIỆN KÉP: GIÁ TĂNG & VOL TĂNG THÊM
                                     if price_change >= PRICE_SURGE_THRESHOLD and buy_diff > c['trigger_vol_diff']:
                                         self.open_position(symbol, 'buy', current_price, buy_diff, price_change)
                                         break
                                     else:
-                                        reason = "giá yếu" if price_change < PRICE_SURGE_THRESHOLD else "Vol xì hơi"
-                                        print(f"❌ [{symbol}] Hủy lệnh vì {reason} (Vol: {buy_diff*100:.1f}% vs gốc {c['trigger_vol_diff']*100:.1f}%)")
                                         c['pending_side'] = None
                             
                             elif c['pending_side'] == 'sell':
                                 if current_price > c['trigger_price']:
                                     c['pending_side'] = None
                                 elif elapsed >= CONFIRMATION_TIME:
-                                    # KIỂM TRA ĐIỀU KIỆN KÉP: GIÁ GIẢM & VOL TĂNG THÊM
                                     if abs(price_change) >= PRICE_SURGE_THRESHOLD and sell_diff > c['trigger_vol_diff']:
                                         self.open_position(symbol, 'sell', current_price, sell_diff, price_change)
                                         break
                                     else:
-                                        reason = "giá yếu" if abs(price_change) < PRICE_SURGE_THRESHOLD else "Vol xì hơi"
-                                        print(f"❌ [{symbol}] Hủy lệnh vì {reason} (Vol: {sell_diff*100:.1f}% vs gốc {c['trigger_vol_diff']*100:.1f}%)")
                                         c['pending_side'] = None
                     time.sleep(0.05)
 
@@ -177,6 +173,15 @@ class TradingBot:
                 if current_price:
                     c = self.coins[symbol]
                     price_trend_ago = c['price_history'][-180] if len(c['price_history']) >= 180 else c['price_history'][0]
+                    
+                    # Tính toán vận tốc sau 10 giây giữ lệnh
+                    elapsed_holding = current_time - self.entry_time
+                    if elapsed_holding >= 10:
+                        current_velocity = abs(current_price - self.entry_price) / elapsed_holding
+                        if current_velocity < 0.7 * self.initial_velocity:
+                            self.close_position(current_price, f"Vận tốc giá giảm mạnh ({current_velocity:.4f} < {0.7*self.initial_velocity:.4f})")
+                            continue
+
                     if self.current_position == 'buy':
                         if current_price <= price_trend_ago:
                             self.close_position(current_price, f"Giá {symbol} đảo chiều 3p")
@@ -193,15 +198,19 @@ class TradingBot:
         self.active_symbol = symbol
         self.current_position = side
         self.entry_price = price
+        self.entry_time = time.time()
+        # Tính vận tốc ban đầu (thay đổi giá tuyệt đối trên giây trong 60s chờ)
+        self.initial_velocity = abs(price - self.coins[symbol]['trigger_price']) / CONFIRMATION_TIME
+        
         trade_amt = min(self.balance, DEFAULT_TRADE_AMOUNT)
         self.amount_coin = (trade_amt * LEVERAGE) / price
         emoji = "🟢" if side == 'buy' else "🔴"
         msg = (
             f"{emoji} *VÀO LỆNH {side.upper()} ({symbol})*\n"
             f"💰 Giá: `{price:,.4f}`\n"
-            f"🚀 Bùng nổ: `{change*100:.2f}%` (trong 60s)\n"
-            f"📈 Vol hiện tại: `+{diff*100:.1f}%` (Tăng so với lúc bắt đầu)\n"
-            f"💵 Quy mô: `${trade_amt:,.2f}` (x{LEVERAGE})"
+            f"🚀 Vận tốc khởi đầu: `{self.initial_velocity:.4f} USD/s`\n"
+            f"📊 Vol 30p: `+{diff*100:.1f}%` 🔥\n"
+            f"💵 Quy mô: `${trade_amt:,.2f}`"
         )
         send_telegram(msg)
         for s in SYMBOLS: self.coins[s]['pending_side'] = None
