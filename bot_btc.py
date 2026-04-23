@@ -8,11 +8,11 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # --- CẤU HÌNH ---
-SYMBOL = 'BTC/USDT'  # Cặp giao dịch (Đã đổi sang BTC/USDT)
+SYMBOL = 'BTC/USDT'  # Cặp giao dịch
 LEVERAGE = 10        # Đòn bẩy
 DEFAULT_TRADE_AMOUNT = 100 # Số tiền mặc định mỗi lệnh (USD)
 INITIAL_BALANCE = 100 # Vốn demo ban đầu
-CHECK_INTERVAL = 10  # Giây
+CHECK_INTERVAL = 1   # Giây (Đã giảm xuống 1 giây để quét liên tục)
 TRADES_LIMIT = 100   # Số lượng giao dịch gần nhất để tính khối lượng
 
 # --- THÔNG TIN TELEGRAM ---
@@ -55,7 +55,7 @@ class TradingBot:
             return None, 0, 0
 
     def run(self):
-        send_telegram(f"🚀 *Bot BTC/USDT Demo đã khởi động!*\n- Vốn: `${self.balance:,.2f}`\n- Đòn bẩy: `{LEVERAGE}x`\n- Lệnh tối đa: `${DEFAULT_TRADE_AMOUNT:,.2f}`")
+        send_telegram(f"🚀 *Bot BTC/USDT Demo (Quét nhanh 1s) đã khởi động!*\n- Vốn: `${self.balance:,.2f}`\n- Đòn bẩy: `{LEVERAGE}x`\n- Lệnh tối đa: `${DEFAULT_TRADE_AMOUNT:,.2f}`")
         
         while True:
             price, buy_vol, sell_vol = self.get_market_data()
@@ -80,17 +80,15 @@ class TradingBot:
                 if self.balance > 0:
                     self.open_position('buy', price, buy_vol, sell_vol)
             
+            # Log console để bạn theo dõi trên Railway
             print(f"[{SYMBOL}] Giá: {price:,.2f} | B-Vol: {buy_vol:,.4f} | S-Vol: {sell_vol:,.4f} | Pos: {self.current_position}")
+            
             time.sleep(CHECK_INTERVAL)
 
     def open_position(self, side, price, b_vol, s_vol):
         self.current_position = side
         self.entry_price = price
-        
-        # Logic: Nếu balance < 100 thì dùng hết balance, nếu balance >= 100 thì dùng 100
         self.current_trade_amount = min(self.balance, DEFAULT_TRADE_AMOUNT)
-        
-        # Giả lập số lượng coin mua được với đòn bẩy
         self.amount_coin = (self.current_trade_amount * LEVERAGE) / price
         
         emoji = "🟢" if side == 'buy' else "🔴"
