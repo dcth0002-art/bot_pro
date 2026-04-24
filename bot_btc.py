@@ -15,16 +15,17 @@ SYMBOLS = [
     'OKB/USDT', 'KAITO/USDT', 'PI/USDT'
 ]
 LEVERAGE = 10
-DEFAULT_TRADE_AMOUNT = 100
-INITIAL_BALANCE = 100
+DEFAULT_TRADE_AMOUNT = 100 
+INITIAL_BALANCE = 100      
 CHECK_INTERVAL = 1
 WARMUP_PERIOD = 300 
 VOL_WINDOW_SIZE = 1800 
 COOLDOWN_PERIOD = 300 
 VOL_DIFF_THRESHOLD = 0.50 
 CONFIRMATION_TIME = 60 
-PRICE_SURGE_THRESHOLD = 0.002 # 0.2% (tương đương 2% trên đòn bẩy 10x)
+PRICE_SURGE_THRESHOLD = 0.002 
 STATUS_REPORT_INTERVAL = 600 
+FEE_RATE = 0.0005 # 0.05% position size = 0.5$
 
 # --- THÔNG TIN TELEGRAM ---
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -48,8 +49,7 @@ class TradingBot:
         self.active_symbol = None
         self.entry_price = 0
         self.amount_coin = 0
-        self.entry_time = 0
-        self.initial_velocity = 0
+        self.current_trade_amount = 0
         
         self.coins = {}
         for symbol in SYMBOLS:
@@ -104,7 +104,7 @@ class TradingBot:
             return None
 
     def run(self):
-        send_telegram(f"🚀 *Bot Săn Lệnh Động Lượng đã khởi động!*\n- Xác nhận: 60s & 2% Leverage\n- Giữ lệnh: Vận tốc hiện tại >= 70% vận tốc khởi đầu.")
+        send_telegram(f"🚀 *Bot Đảo Chiều (Pure TP/SL) đã khởi động!*\n- Đóng lệnh: Chỉ chốt lãi 2% ròng hoặc Cháy 100%\n- Không đóng theo xu hướng hay vận tốc.")
         
         while True:
             current_time = time.time()
@@ -118,121 +118,125 @@ class TradingBot:
                         time.sleep(0.05)
                     continue
 
+            # --- TRƯỜNG HỢP 1: ĐI SĂN TÍN HIỆU ---
             if self.active_symbol is None:
                 for symbol in SYMBOLS:
                     current_price = self.update_coin_data(symbol)
                     if current_price is None: continue
                     
                     c = self.coins[symbol]
-                    price_trend_ago = c['price_history'][-180] if len(c['price_history']) >= 180 else c['price_history'][0]
+                    price_3p_ago = c['price_history'][-180] if len(c['price_history']) >= 180 else c['price_history'][0]
                     buy_diff = (c['total_buy_30p'] - c['total_sell_30p']) / c['total_sell_30p'] if c['total_sell_30p'] > 0 else 1.0
                     sell_diff = (c['total_sell_30p'] - c['total_buy_30p']) / c['total_buy_30p'] if c['total_buy_30p'] > 0 else 1.0
 
                     if current_time - c['last_close_time'] >= COOLDOWN_PERIOD:
                         if c['pending_side'] is None:
-                            if buy_diff > VOL_DIFF_THRESHOLD and current_price > price_trend_ago:
-                                c['pending_side'] = 'buy'
+                            if buy_diff > VOL_DIFF_THRESHOLD and current_price > price_3p_ago:
+                                c['pending_side'] = 'sell_trigger'
                                 c['trigger_price'] = current_price
                                 c['trigger_time'] = current_time
                                 c['trigger_vol_diff'] = buy_diff
-                                print(f"🔍 [{symbol}] Vol Mua mạnh! Chờ xác nhận bùng nổ...")
-                            elif sell_diff > VOL_DIFF_THRESHOLD and current_price < price_trend_ago:
-                                c['pending_side'] = 'sell'
+                                print(f"🔍 [{symbol}] Chờ SHORT đảo chiều...")
+                            elif sell_diff > VOL_DIFF_THRESHOLD and current_price < price_3p_ago:
+                                c['pending_side'] = 'buy_trigger'
                                 c['trigger_price'] = current_price
                                 c['trigger_time'] = current_time
                                 c['trigger_vol_diff'] = sell_diff
-                                print(f"🔍 [{symbol}] Vol Bán mạnh! Chờ xác nhận bùng nổ...")
+                                print(f"🔍 [{symbol}] Chờ LONG đảo chiều...")
                         else:
                             elapsed = current_time - c['trigger_time']
                             price_change = (current_price - c['trigger_price']) / c['trigger_price']
                             
-                            if c['pending_side'] == 'buy':
+                            if c['pending_side'] == 'sell_trigger':
                                 if current_price < c['trigger_price']:
                                     c['pending_side'] = None
                                 elif elapsed >= CONFIRMATION_TIME:
                                     if price_change >= PRICE_SURGE_THRESHOLD and buy_diff > c['trigger_vol_diff']:
-                                        self.open_position(symbol, 'buy', current_price, buy_diff, price_change)
+                                        self.open_position(symbol, 'sell', current_price, buy_diff)
                                         break
                                     else:
                                         c['pending_side'] = None
                             
-                            elif c['pending_side'] == 'sell':
+                            elif c['pending_side'] == 'buy_trigger':
                                 if current_price > c['trigger_price']:
                                     c['pending_side'] = None
                                 elif elapsed >= CONFIRMATION_TIME:
                                     if abs(price_change) >= PRICE_SURGE_THRESHOLD and sell_diff > c['trigger_vol_diff']:
-                                        self.open_position(symbol, 'sell', current_price, sell_diff, price_change)
+                                        self.open_position(symbol, 'buy', current_price, sell_diff)
                                         break
                                     else:
                                         c['pending_side'] = None
                     time.sleep(0.05)
 
+            # --- TRƯỜNG HỢP 2: ĐANG GIỮ LỆNH (CHỈ TP/SL) ---
             else:
                 symbol = self.active_symbol
                 current_price = self.update_coin_data(symbol)
                 if current_price:
-                    c = self.coins[symbol]
-                    price_trend_ago = c['price_history'][-180] if len(c['price_history']) >= 180 else c['price_history'][0]
-                    
-                    # Tính toán vận tốc sau 10 giây giữ lệnh
-                    elapsed_holding = current_time - self.entry_time
-                    if elapsed_holding >= 10:
-                        current_velocity = abs(current_price - self.entry_price) / elapsed_holding
-                        if current_velocity < 0.7 * self.initial_velocity:
-                            self.close_position(current_price, f"Vận tốc giá giảm mạnh ({current_velocity:.4f} < {0.7*self.initial_velocity:.4f})")
-                            continue
-
                     if self.current_position == 'buy':
-                        if current_price <= price_trend_ago:
-                            self.close_position(current_price, f"Giá {symbol} đảo chiều 3p")
-                    elif self.current_position == 'sell':
-                        if current_price >= price_trend_ago:
-                            self.close_position(current_price, f"Giá {symbol} đảo chiều 3p")
+                        raw_pnl = (current_price - self.entry_price) * self.amount_coin
+                    else:
+                        raw_pnl = (self.entry_price - current_price) * self.amount_coin
+                    
+                    target_profit = (self.current_trade_amount * 0.02) + 1.0 # 2$ lãi + 1$ phí
+                    
+                    if raw_pnl >= target_profit:
+                        self.close_position(current_price, "Chốt lời (TP) lãi ròng 2%")
+                    elif raw_pnl <= -self.current_trade_amount:
+                        self.close_position(current_price, "Cháy tài khoản (SL 100%)")
 
             if current_time - self.last_status_time >= STATUS_REPORT_INTERVAL:
                 self.send_multi_report()
                 self.last_status_time = current_time
             time.sleep(CHECK_INTERVAL)
 
-    def open_position(self, symbol, side, price, diff, change):
+    def open_position(self, symbol, side, price, vol_diff):
         self.active_symbol = symbol
         self.current_position = side
         self.entry_price = price
-        self.entry_time = time.time()
-        # Tính vận tốc ban đầu (thay đổi giá tuyệt đối trên giây trong 60s chờ)
-        self.initial_velocity = abs(price - self.coins[symbol]['trigger_price']) / CONFIRMATION_TIME
+        self.current_trade_amount = min(self.balance, DEFAULT_TRADE_AMOUNT)
+        entry_fee = (self.current_trade_amount * LEVERAGE) * FEE_RATE
+        self.balance -= entry_fee
+        self.amount_coin = (self.current_trade_amount * LEVERAGE) / price
         
-        trade_amt = min(self.balance, DEFAULT_TRADE_AMOUNT)
-        self.amount_coin = (trade_amt * LEVERAGE) / price
-        emoji = "🟢" if side == 'buy' else "🔴"
+        emoji = "🔴" if side == 'sell' else "🟢"
         msg = (
             f"{emoji} *VÀO LỆNH {side.upper()} ({symbol})*\n"
             f"💰 Giá: `{price:,.4f}`\n"
-            f"🚀 Vận tốc khởi đầu: `{self.initial_velocity:.4f} USD/s`\n"
-            f"📊 Vol 30p: `+{diff*100:.1f}%` 🔥\n"
-            f"💵 Quy mô: `${trade_amt:,.2f}`"
+            f"📊 Vol chênh lệch: `+{vol_diff*100:.1f}%` 🔥\n"
+            f"💸 Phí mở lệnh: `$0.50` (Đã trừ)\n"
+            f"💵 Ký quỹ: `${self.current_trade_amount:,.2f}`"
         )
         send_telegram(msg)
         for s in SYMBOLS: self.coins[s]['pending_side'] = None
 
     def close_position(self, price, reason):
         symbol = self.active_symbol
-        pnl = (price - self.entry_price) * self.amount_coin if self.current_position == 'buy' else (self.entry_price - price) * self.amount_coin
-        self.balance += pnl
+        if self.current_position == 'buy':
+            raw_pnl = (price - self.entry_price) * self.amount_coin
+        else:
+            raw_pnl = (self.entry_price - price) * self.amount_coin
+            
+        exit_fee = (self.current_trade_amount * LEVERAGE) * FEE_RATE
+        real_net_profit = raw_pnl - 1.0 # Trừ 0.5$ phí vào đã trừ trước đó và 0.5$ phí ra bây giờ
+        self.balance += (raw_pnl - exit_fee)
+        
         self.coins[symbol]['last_close_time'] = time.time()
-        status = "LÃI" if pnl > 0 else "LỖ"
+        status = "LÃI ✅" if real_net_profit > 0 else "LỖ ❌"
         msg = (
             f"⚠️ *ĐÓNG LỆNH {symbol}*\n"
             f"📝 Lý do: {reason}\n"
-            f"🏁 PnL: `{pnl:,.2f}$` ({status})\n"
-            f"🏦 Số dư: `${self.balance:,.2f}$`"
+            f"🏁 Lợi nhuận thô: `{raw_pnl:,.2f}$`\n"
+            f"💸 Tổng phí (vào+ra): `$1.00`\n"
+            f"💰 Lãi ròng thực tế: `{real_net_profit:,.2f}$` ({status})\n"
+            f"🏦 Số dư cuối: `${self.balance:,.2f}$`"
         )
         send_telegram(msg)
         self.active_symbol = None
         self.current_position = None
 
     def send_multi_report(self):
-        msg = f"📊 *GIÁM SÁT HỆ THỐNG*\n📍 {'Đang trade: ' + self.active_symbol if self.active_symbol else 'Đang săn tín hiệu...'}\n🏦 Vốn: `${self.balance:,.2f}$`"
+        msg = f"📊 *GIÁM SÁT HỆ THỐNG*\n📍 {'Đang trade: ' + self.active_symbol if self.active_symbol else 'Đang săn tín hiệu đảo chiều...'}\n🏦 Vốn: `${self.balance:,.2f}$`"
         send_telegram(msg)
 
 if __name__ == "__main__":
